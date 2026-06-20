@@ -1,1 +1,166 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Gravador de voz — MY-MUSIC</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{ --fundo:#1f140d; --papel:#f7efe1; --tinta:#2b1b12; --accent:#D4A24C; --accent-escuro:#8B5A2B; }
+  *{ box-sizing:border-box; }
+  body{
+    margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+    background:var(--fundo); font-family:system-ui, -apple-system, sans-serif; padding:20px;
+  }
+  .cartao{
+    background:var(--papel); border-radius:18px; padding:28px 24px; max-width:360px; width:100%;
+    text-align:center; box-shadow:0 18px 40px rgba(0,0,0,0.35); color:var(--tinta);
+  }
+  h1{ font-size:1.2rem; margin:0 0 6px; }
+  p{ font-size:0.88rem; color:#6b5a48; line-height:1.5; margin:0 0 18px; }
+  .icone{ font-size:2.6rem; margin-bottom:6px; }
+  button{
+    border:none; border-radius:999px; padding:13px 22px; font-weight:800; font-size:0.95rem;
+    cursor:pointer; background:var(--accent-escuro); color:#fff8ec; width:100%;
+  }
+  button:disabled{ opacity:0.5; cursor:not-allowed; }
+  .botao-parar{ background:#b3261e; margin-top:10px; }
+  .status{ margin-top:16px; font-size:0.85rem; color:#6b5a48; min-height:1.4em; }
+  .contagem{ font-size:2.4rem; font-weight:800; color:var(--accent-escuro); margin:10px 0; }
+  .barra-fundo{ background:#e3d6c4; border-radius:999px; height:10px; margin-top:14px; overflow:hidden; display:none; }
+  .barra-fundo.ativa{ display:block; }
+  .barra-preenchimento{ background:var(--accent-escuro); height:100%; width:0%; transition:width 0.2s linear; }
+  .ponto{
+    width:10px; height:10px; border-radius:50%; background:#b3261e; display:inline-block; margin-right:6px;
+    animation:piscar 1s ease-in-out infinite;
+  }
+  @keyframes piscar{ 0%,100%{opacity:1;} 50%{opacity:0.25;} }
+  @media (prefers-reduced-motion: reduce){ .ponto{ animation:none; } }
+</style>
+</head>
+<body>
+  <div class="cartao">
+    <div class="icone" id="icone">🎤</div>
+    <h1 id="titulo">Gravador de voz</h1>
+    <p id="texto">Essa janela grava sua voz separada do app principal (é uma limitação do Google Apps Script). Quando terminar, feche — a gravação volta sozinha pro app.</p>
 
+    <button id="btnPermitir">Permitir microfone</button>
+    <div class="contagem" id="contagem" style="display:none;"></div>
+    <button id="btnParar" class="botao-parar" style="display:none;">⏹️ Parar agora</button>
+    <div class="barra-fundo" id="barraFundo"><div class="barra-preenchimento" id="barraPreenchimento"></div></div>
+    <div class="status" id="status"></div>
+  </div>
+
+<script>
+  var params = new URLSearchParams(window.location.search);
+  var duracaoAlvo = parseFloat(params.get('duracao')) || 30;
+
+  var elIcone = document.getElementById('icone');
+  var elTitulo = document.getElementById('titulo');
+  var elTexto = document.getElementById('texto');
+  var elBtnPermitir = document.getElementById('btnPermitir');
+  var elBtnParar = document.getElementById('btnParar');
+  var elContagem = document.getElementById('contagem');
+  var elStatus = document.getElementById('status');
+  var elBarraFundo = document.getElementById('barraFundo');
+  var elBarraPreenchimento = document.getElementById('barraPreenchimento');
+
+  var mediaStream = null;
+  var gravador = null;
+  var pedacos = [];
+  var timerProgresso = null;
+
+  elBtnPermitir.addEventListener('click', function () {
+    elBtnPermitir.disabled = true;
+    elStatus.textContent = 'Pedindo permissão...';
+
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+      mediaStream = stream;
+      elBtnPermitir.style.display = 'none';
+      elStatus.textContent = '';
+      iniciarContagemRegressiva();
+    }).catch(function (erro) {
+      elBtnPermitir.disabled = false;
+      elStatus.textContent = 'Não consegui acessar o microfone (' + (erro && erro.name ? erro.name : 'erro') + '). Verifique se o navegador não bloqueou a permissão pro site.';
+    });
+  });
+
+  function iniciarContagemRegressiva() {
+    elTitulo.textContent = 'Prepare-se!';
+    elTexto.textContent = 'A gravação começa em instantes.';
+    elContagem.style.display = 'block';
+    var n = 3;
+    elContagem.textContent = n;
+    var intervalo = setInterval(function () {
+      n--;
+      if (n <= 0) {
+        clearInterval(intervalo);
+        elContagem.style.display = 'none';
+        iniciarGravacao();
+      } else {
+        elContagem.textContent = n;
+      }
+    }, 1000);
+  }
+
+  function iniciarGravacao() {
+    elIcone.textContent = '🔴';
+    elTitulo.textContent = 'Gravando...';
+    elTexto.textContent = 'Cante junto com a música no app principal.';
+    elBtnParar.style.display = 'block';
+    elBarraFundo.classList.add('ativa');
+    elStatus.innerHTML = '<span class="ponto"></span> Capturando áudio';
+
+    pedacos = [];
+    var mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '';
+    gravador = mimeType ? new MediaRecorder(mediaStream, { mimeType: mimeType }) : new MediaRecorder(mediaStream);
+
+    gravador.addEventListener('dataavailable', function (e) {
+      if (e.data && e.data.size > 0) { pedacos.push(e.data); }
+    });
+    gravador.addEventListener('stop', finalizarEEnviar);
+    gravador.start();
+
+    var inicio = Date.now();
+    timerProgresso = setInterval(function () {
+      var decorrido = (Date.now() - inicio) / 1000;
+      var pct = Math.min(100, (decorrido / duracaoAlvo) * 100);
+      elBarraPreenchimento.style.width = pct + '%';
+      if (decorrido >= duracaoAlvo) { pararGravacao(); }
+    }, 100);
+  }
+
+  elBtnParar.addEventListener('click', pararGravacao);
+
+  function pararGravacao() {
+    if (timerProgresso) { clearInterval(timerProgresso); timerProgresso = null; }
+    if (gravador && gravador.state !== 'inactive') { gravador.stop(); }
+    elBtnParar.disabled = true;
+  }
+
+  function finalizarEEnviar() {
+    elIcone.textContent = '✅';
+    elTitulo.textContent = 'Processando...';
+    elTexto.textContent = '';
+    elStatus.textContent = 'Enviando gravação de volta pro app...';
+
+    if (mediaStream) { mediaStream.getTracks().forEach(function (t) { t.stop(); }); }
+
+    var blob = new Blob(pedacos, { type: gravador.mimeType || 'audio/webm' });
+    var leitor = new FileReader();
+    leitor.onload = function () {
+      if (window.opener) {
+        window.opener.postMessage({ type: 'AUDIO_CAPTURE_SUCCESS', base64DataUrl: leitor.result }, '*');
+      }
+      elTitulo.textContent = 'Pronto!';
+      elTexto.textContent = 'Pode fechar essa janela — a gravação já foi enviada.';
+      elStatus.textContent = '';
+      setTimeout(function () { window.close(); }, 1800);
+    };
+    leitor.onerror = function () {
+      elStatus.textContent = 'Deu erro ao preparar o áudio. Pode fechar e tentar de novo.';
+    };
+    leitor.readAsDataURL(blob);
+  }
+</script>
+</body>
+</html>
